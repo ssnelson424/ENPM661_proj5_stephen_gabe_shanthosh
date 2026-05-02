@@ -3,7 +3,7 @@
 # Project 5 - Competition with RRT
 # Main/Run File
 
-from algorithm import AlgorithmBase,RRT,RRT_Star
+from algorithm import AlgorithmBase,RRT,RRTStar,RRTStarAPEI
 from robot import Robot
 from map import Map
 from collections import deque
@@ -17,7 +17,7 @@ def main():
     game_board = Map(6000,3000,110)
     turtlebot = Robot()
     #rrt = RRT(game_board,turtlebot)
-    rrt = RRT_Star(game_board,turtlebot)
+    rrt = RRTStarAPEI(game_board,turtlebot)
     
     #output analytics from RRT class for debugging + measurements
     rrt.analysis = True
@@ -30,7 +30,7 @@ def main():
     
     end_time = time.perf_counter()
     
-    print(f"computation complete. Elapsed Time:{end_time-start_time:2f}")
+    print(f"Computation complete. Elapsed Time:{end_time-start_time:2f}")
     
     game_board.plot_map(nodes=rrt.nodes,parents=rrt.parents,path_1=rrt._raw_path,path_2=path_to_goal)     
     

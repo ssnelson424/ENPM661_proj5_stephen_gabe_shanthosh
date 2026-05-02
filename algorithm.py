@@ -6,11 +6,10 @@
 from map import Map
 from robot import Robot
 from trajectory import Trajectory
-from random import randint
-from math import sqrt,floor,ceil
+from random import randint,uniform,expovariate
+from math import sqrt,floor,ceil,log2,atan2,cos,sin, pi
 from collections import deque
 from abc import ABC, abstractmethod
-
 
 class AlgorithmBase(ABC):
     def __init__(self,map:Map,robot:Robot):
@@ -26,6 +25,10 @@ class AlgorithmBase(ABC):
         self._raw_path_dist = 0
         self._smooth_path_dist = 0
         self._give_analysis = False
+        self._cost = {self._map.start:0}
+        self._test_radius = self._resolution*5
+        self._node_buckets = {}
+        self._bucket_size = self._test_radius
     
     @property
     def nodes(self) -> list[tuple[float,float]]:
@@ -46,12 +49,21 @@ class AlgorithmBase(ABC):
     @abstractmethod
     def solve(self) -> deque[tuple[float,float]]:
         """solves the provided map through RRT/RRT*/Improved RRT*"""
-        pass
-    
-    @abstractmethod
-    def reset(self) -> None:
+        pass    
+
+    def reset(self)->None:
         """resets path and internal data structures to prevent mixing"""
-        pass
+        
+        self._nodes.clear()
+        self._parent.clear()
+        self._visited.clear()
+        self._raw_path.clear()
+        self._path_to_goal.clear()
+        self._raw_path_dist = 0
+        self._smooth_path_dist = 0
+        self._node_buckets.clear()
+        self._cost.clear()
+        self._cost = {self._map.start:0}
         
     def get_distance(self,first:tuple[float,float],second:tuple[float,float])->float:
         """gets the distance between two coordinates
@@ -70,7 +82,7 @@ class AlgorithmBase(ABC):
         return sqrt(dx**2 + dy**2)
         
     def bucketize(self,coords:tuple[float,float])->tuple[float,float]:
-        """returns the bucketized coords for duplicity checking
+        """returns the very localized bucketized coords for duplicity checking - not for use during RRT*/I-RRT* near-node finding
 
         Args:
             coords (tuple(float,float)): coordinates to be bucketized
@@ -113,6 +125,14 @@ class AlgorithmBase(ABC):
         return (x,y)  
     
     def smooth(self,path:deque[tuple[float,float]])->deque[tuple[float,float]]:
+        """smooth the raw path output by the RRT planner by removed unnecessary nodes. Uses concept of visibility around obstacles
+
+        Args:
+            path (deque[tuple[float,float]]): raw_ path from RRT planner
+
+        Returns:
+            deque[tuple[float,float]]: smoothed path
+        """
         
         if len(path) <= 3:
             return path.copy()
@@ -183,7 +203,113 @@ class AlgorithmBase(ABC):
             self._smooth_path_dist += dist
             x1,y1 = x2,y2
         
-        print(f"Smooth Path Distance: {self._smooth_path_dist}") 
+        print(f"Smooth Path Distance: {self._smooth_path_dist}")
+        
+    def find_best_parent(self,active_node:tuple[float,float],local_nodes:list[tuple[float,float]])->tuple[tuple[float,float],float]:
+        """finds the best parent node based on cost. Uses very-large buckets to allow localized node sampling. 
+            Not for use in duplicity checking
+
+        Args:
+            active_node (tuple[float,float]): coordinates which require parents
+            local_nodes list(tuple(float,float)):all nodes in the local bucket
+
+        Returns:
+            tuple[tuple[float,float],float]: ((parent_cords x,y),cost)
+        """
+        
+        best_cost = None
+        best_parent = None        
+        
+        #iterate through nodes in set radius to find (lowest cost + distance)
+        for node in local_nodes:
+            cost = self._cost[node]+self.get_distance(node,active_node)
+            
+            #if better cost found update parent,cost
+            if (best_cost == None or best_cost >= cost) and self._map.check_edge_free(node,active_node):
+                best_parent = node
+                best_cost = cost            
+
+        return (best_parent,best_cost)
+    
+    def get_near_node_bucket(self, active_node:tuple[float,float])->tuple[int,int]:
+        """returns the large bucket to collect nodes in location. Not for use during duplicity checking.
+
+        Args:
+            active_node (tuple[float,float]): coordinates to be bucketed (x,y)
+
+        Returns:
+            tuple[int,int]: bucketized coords (x,y)
+        """
+        x,y = active_node
+        return (int(floor(x/self._test_radius)),int(floor(y/self._test_radius)))
+    
+    def add_node_to_bucket(self, active_node:tuple[float,float])-> None:
+        """adds node to large bucket for faster local node sampling. Not for use during duplicity checking
+
+        Args:
+            node (tuple[float,float]): node to be added to bucket (x,y)
+            
+        """
+        #determine which bucket node fits into
+        bucket = self.get_near_node_bucket(active_node)
+        
+        #if bucket doesnt exist in dictionary, add bucket to dictionary
+        if bucket not in self._node_buckets:
+            self._node_buckets[bucket]=[]
+
+        #add node to bucket
+        self._node_buckets[bucket].append(active_node)
+    
+    def get_near_nodes(self,active_node:tuple[float,float]) -> list[tuple[float,float]]:
+        """provides nodes from all local large buckets for local node/distance/cost comparison. not for use in duplicity checking.
+
+        Args:
+            active_node (tuple[float,float]): coordinates being evaluated
+
+        Returns:
+            list[tuple[float,float]]: list of coordinate nodes in nearby bucket
+        """
+        x_bucket,y_bucket = self.get_near_node_bucket(active_node)
+        near_nodes = []
+        
+        search_range = ceil(self._test_radius/self._bucket_size)
+        
+        for dx in range(-search_range,search_range+1):
+            for dy in range(-search_range,search_range+1):
+                bucket = (x_bucket+dx,y_bucket+dy)
+                
+                if bucket not in self._node_buckets:
+                    continue
+                
+                for node in self._node_buckets[bucket]:
+                    if self.get_distance(node,active_node) <= self._test_radius:
+                        near_nodes.append(node)
+        return near_nodes
+    
+    def rewire(self,active_node:tuple[float,float],local_nodes:tuple[float,float])->None:
+        """Adds rewiring to verify no better path has been found
+
+        Args:
+            active_node (tuple[float,float]): node being processed
+            local_nodes (tuple[float,float]]): list of local nodes to check rewiring from
+        """
+        
+        #iterate through each local node    
+        for node in local_nodes:
+            if node == active_node:
+                continue
+            
+            #can a straight line be drawn to the active node unobstructed
+            if not self._map.check_edge_free(active_node,node):
+                continue
+            
+            #calculate cost through the active node
+            new_cost = self._cost[active_node] + self.get_distance(active_node,node)
+            
+            #if cost is less, make active node the parent and update cost
+            if new_cost < self._cost[node]:
+                self._parent[node] = active_node
+                self._cost[node] = new_cost
         
 
 class RRT(AlgorithmBase):
@@ -285,40 +411,10 @@ class RRT(AlgorithmBase):
             self.give_analytics(iterator)
         
         return self._path_to_goal
-
-    def reset(self)->None:
-        """resets path and internal data structures to prevent mixing"""
-        
-        self._nodes.clear()
-        self._parent.clear()
-        self._visited.clear()
-        self._raw_path.clear()
-        self._path_to_goal.clear()
-        self._raw_path_dist = 0
-        self._smooth_path_dist = 0
     
-class RRT_Star(AlgorithmBase):
+class RRTStar(AlgorithmBase):
     def __init__(self,map:Map,robot:Robot):
         super().__init__(map,robot)
-        self._cost = {self._map.start:0}
-        self._test_radius = self._resolution*5
-        self._node_buckets = {}
-        self._bucket_size = self._test_radius
-        
-
-    def reset(self)->None:
-        """resets path and internal data structures to prevent mixing"""
-        
-        self._nodes.clear()
-        self._parent.clear()
-        self._visited.clear()
-        self._raw_path.clear()
-        self._path_to_goal.clear()
-        self._raw_path_dist = 0
-        self._smooth_path_dist = 0
-        self._node_buckets.clear()
-        self._cost.clear()
-        self._cost = {self._map.start:0}
 
     def solve(self) -> deque[tuple[float,float]]:
         """generate a path to goal to solve the maze using RRT*"""       
@@ -422,132 +518,24 @@ class RRT_Star(AlgorithmBase):
         if self._give_analysis:
             self.give_analytics(iterator)
         
-        return self._path_to_goal
-    
-    def find_best_parent(self,active_node:tuple[float,float],local_nodes:list[tuple[float,float]])->tuple[tuple[float,float],float]:
-        """finds the best parent node based on cost
+        return self._path_to_goal    
 
-        Args:
-            active_node (tuple[float,float]): coordinates which require parents
-            local_nodes list(tuple(float,float)):all nodes in the local bucket
-
-        Returns:
-            tuple[tuple[float,float],float]: ((parent_cords x,y),cost)
-        """
-        
-        best_cost = None
-        best_parent = None        
-        
-        #iterate through nodes in set radius to find (lowest cost + distance)
-        for node in local_nodes:
-            cost = self._cost[node]+self.get_distance(node,active_node)
-            
-            #if better cost found update parent,cost
-            if (best_cost == None or best_cost >= cost) and self._map.check_edge_free(node,active_node):
-                best_parent = node
-                best_cost = cost            
-
-        return (best_parent,best_cost)
-    
-    def get_near_node_bucket(self, active_node:tuple[float,float])->tuple[int,int]:
-        """returns the large bucket to collect nodes in location
-
-        Args:
-            active_node (tuple[float,float]): coordinates to be bucketed (x,y)
-
-        Returns:
-            tuple[int,int]: bucketized coords (x,y)
-        """
-        x,y = active_node
-        return (int(floor(x/self._test_radius)),int(floor(y/self._test_radius)))
-    
-    def add_node_to_bucket(self, active_node:tuple[float,float])-> None:
-        """adds node to bucket for faster locating during RRT* search
-
-        Args:
-            node (tuple[float,float]): node to be added to bucket (x,y)
-            
-        """
-        #determine which bucket node fits into
-        bucket = self.get_near_node_bucket(active_node)
-        
-        #if bucket doesnt exist in dictionary, add bucket to dictionary
-        if bucket not in self._node_buckets:
-            self._node_buckets[bucket]=[]
-
-        #add node to bucket
-        self._node_buckets[bucket].append(active_node)
-    
-    def get_near_nodes(self,active_node:tuple[float,float]) -> list[tuple[float,float]]:
-        x_bucket,y_bucket = self.get_near_node_bucket(active_node)
-        near_nodes = []
-        
-        search_range = ceil(self._test_radius/self._bucket_size)
-        
-        for dx in range(-search_range,search_range+1):
-            for dy in range(-search_range,search_range+1):
-                bucket = (x_bucket+dx,y_bucket+dy)
-                
-                if bucket not in self._node_buckets:
-                    continue
-                
-                for node in self._node_buckets[bucket]:
-                    if self.get_distance(node,active_node) <= self._test_radius:
-                        near_nodes.append(node)
-        return near_nodes
-    
-    def rewire(self,active_node:tuple[float,float],local_nodes:tuple[float,float])->None:
-        """Adds rewiring to verify no better path has been found
-
-        Args:
-            active_node (tuple[float,float]): node being processed
-            local_nodes (tuple[float,float]]): list of local nodes to check rewiring from
-        """
-        
-        #iterate through each local node    
-        for node in local_nodes:
-            if node == active_node:
-                continue
-            
-            #can a straight line be drawn to the active node unobstructed
-            if not self._map.check_edge_free(active_node,node):
-                continue
-            
-            #calculate cost through the active node
-            new_cost = self._cost[active_node] + self.get_distance(active_node,node)
-            
-            #if cost is less, make active node the parent and update cost
-            if new_cost < self._cost[node]:
-                self._parent[node] = active_node
-                self._cost[node] = new_cost
-    
 class RRTStarAPEI(AlgorithmBase):
-    """Planner Classing Utilizing APEI-RRT* from subject Paper"""
-    """Optimizing Initial Path Finding in Informed-RRT* with a Novel Map-Adaptice Sampling Technique"""
+    """Planner Classing Utilizing APEI-RRT* from subject paper"""
+    # Paper: Optimizing Initial Path Finding in Informed-RRT* with a Novel Map-Adaptice Sampling Technique"""
+    
     def __init__(self,map:Map,robot:Robot):
         super().__init__(map,robot)
-        self._cost = {self._map.start:0}
-        self._test_radius = self._resolution*5
-        self._node_buckets = {}
-        self._bucket_size = self._test_radius
-        
-
-    def reset(self)->None:
-        """resets path and internal data structures to prevent mixing"""
-        
-        self._nodes.clear()
-        self._parent.clear()
-        self._visited.clear()
-        self._raw_path.clear()
-        self._path_to_goal.clear()
-        self._raw_path_dist = 0
-        self._smooth_path_dist = 0
-        self._node_buckets.clear()
-        self._cost.clear()
-        self._cost = {self._map.start:0}
+        self._miss_ratio = 0.5 # xi from paper, between 0-1
+        self._miss_ratio_delta = 0.2 #omega from paper between 0.1-0.3
+        self._sample_spread = 2.0  #set based on environemtnal context
+        self._eccentricity = 0.7 #e from paper
+        self._best_cost = None
+        self._best_goal_node = None       
 
     def solve(self) -> deque[tuple[float,float]]:
-        """generate a path to goal to solve the maze using RRT*"""       
+        """generate a path to goal to solve the maze using APE I-RRT*"""
+        #APEI - Adaptive Probibalistic Ellipsoid Informed
         
         #clear previous data in case of multiple iterations
         self.reset()
@@ -566,12 +554,14 @@ class RRTStarAPEI(AlgorithmBase):
         #iterate until a path to the final point has been found or 10000 iterations
         while iterator <= 10000 and not goal_found:
             iterator += 1
+        
+            sampling_node = self.sample_rrt_apei(goal_found)
             
-            if goal_found:
-            #create new
-            x = randint(0,sample_x)
-            y = randint(0,max_y)
-            sampling_node = (x,y)
+            if not self._map.check_free_space(sampling_node):
+                self.update_miss_ratio(obstructed = True)
+                continue
+            else:
+                self.update_miss_ratio(obstructed=False)
             
             #initial checks: if already visited, if not in free space
             if self.bucketize(sampling_node) in self._visited:
@@ -622,15 +612,21 @@ class RRTStarAPEI(AlgorithmBase):
                 self.rewire(active_node,local_nodes)
                     
                 #if node has clear path to goal zone, move directly there
-                if self._map.check_edge_free(active_node,(max_x+300,active_node[1])):
+                if self._map.check_edge_free(active_node,(max_x+300,active_node[1])):                
+                    
                     #goal_found
                     goal_found = True
-                    final_node = (max_x,active_node[1])                    
-                    self._parent[final_node] = active_node
+                    final_node = (max_x,active_node[1])                 
+                    candidate_cost = self._cost[active_node] + self.get_distance(active_node,final_node)
                     
-                    #add final 2 nodes to path
-                    self._raw_path.appendleft(final_node)
-                    break     
+                    if self._best_cost is None or candidate_cost < self._best_cost:                            
+                        self._parent[final_node] = active_node
+                        self._best_goal_node = final_node
+                        self._best_cost = candidate_cost
+                
+                    #add final nodes to path
+                    self._raw_path.appendleft(self._best_goal_node)  
+                    final_node = self._best_goal_node
         
         while final_node != self._map.start and goal_found:
             
@@ -651,102 +647,109 @@ class RRTStarAPEI(AlgorithmBase):
         
         return self._path_to_goal
     
-    def find_best_parent(self,active_node:tuple[float,float],local_nodes:list[tuple[float,float]])->tuple[tuple[float,float],float]:
-        """finds the best parent node based on cost
+    def sample_rrt_apei(self,goal_found:bool)->tuple[float,float]:
+        """provides a sample node to the algorithm to evaluate
 
         Args:
-            active_node (tuple[float,float]): coordinates which require parents
-            local_nodes list(tuple(float,float)):all nodes in the local bucket
+            goal_found (bool): is initial path being found (goal_found:Flase), or imporved (goal_found:true)
 
         Returns:
-            tuple[tuple[float,float],float]: ((parent_cords x,y),cost)
-        """
-        
-        best_cost = None
-        best_parent = None        
-        
-        #iterate through nodes in set radius to find (lowest cost + distance)
-        for node in local_nodes:
-            cost = self._cost[node]+self.get_distance(node,active_node)
+            tuple[float,float]: (x,y) coordinates
+        """        
+        #goal not found sampling in normal APEI
+        #taken from Alogirthm 1 of paper
+        if not goal_found:
+            start = self._map.start
+            max_x,max_y = self._map.dimensions
+            goal = (max_x,max_y/2)
             
-            #if better cost found update parent,cost
-            if (best_cost == None or best_cost >= cost) and self._map.check_edge_free(node,active_node):
-                best_parent = node
-                best_cost = cost            
-
-        return (best_parent,best_cost)
-    
-    def get_near_node_bucket(self, active_node:tuple[float,float])->tuple[int,int]:
-        """returns the large bucket to collect nodes in location
-
-        Args:
-            active_node (tuple[float,float]): coordinates to be bucketed (x,y)
-
-        Returns:
-            tuple[int,int]: bucketized coords (x,y)
-        """
-        x,y = active_node
-        return (int(floor(x/self._test_radius)),int(floor(y/self._test_radius)))
-    
-    def add_node_to_bucket(self, active_node:tuple[float,float])-> None:
-        """adds node to bucket for faster locating during RRT* search
-
-        Args:
-            node (tuple[float,float]): node to be added to bucket (x,y)
-            
-        """
-        #determine which bucket node fits into
-        bucket = self.get_near_node_bucket(active_node)
-        
-        #if bucket doesnt exist in dictionary, add bucket to dictionary
-        if bucket not in self._node_buckets:
-            self._node_buckets[bucket]=[]
-
-        #add node to bucket
-        self._node_buckets[bucket].append(active_node)
-    
-    def get_near_nodes(self,active_node:tuple[float,float]) -> list[tuple[float,float]]:
-        x_bucket,y_bucket = self.get_near_node_bucket(active_node)
-        near_nodes = []
-        
-        search_range = ceil(self._test_radius/self._bucket_size)
-        
-        for dx in range(-search_range,search_range+1):
-            for dy in range(-search_range,search_range+1):
-                bucket = (x_bucket+dx,y_bucket+dy)
+            for _ in range(10):  # try up to 10 times
+                theta = uniform(0,2*pi)
                 
-                if bucket not in self._node_buckets:
-                    continue
+                rate = max((1-self._miss_ratio)*self._sample_spread,1e-6)
+                gamma = expovariate(rate)
                 
-                for node in self._node_buckets[bucket]:
-                    if self.get_distance(node,active_node) <= self._test_radius:
-                        near_nodes.append(node)
-        return near_nodes
-    
-    def rewire(self,active_node:tuple[float,float],local_nodes:tuple[float,float])->None:
-        """Adds rewiring to verify no better path has been found
+                a = self.get_distance(start,goal)/2
+                b = a * sqrt(1-self._eccentricity**2)
+                
+                x_sampled = log2(2+gamma)*a*cos(theta)
+                y_sampled = gamma * b*sin(theta)
+                
+                angle = atan2(goal[1] - start[1],goal[0]-start[0])
+                
+                rotated_x = x_sampled*cos(angle) - y_sampled*sin(angle)
+                rotated_y = x_sampled*sin(angle) + y_sampled*cos(angle)
+                
+                midpoint = ((start[0]+goal[0])/2,(start[1]+goal[1])/2)
+                
+                sample = (rotated_x + midpoint[0], rotated_y + midpoint[1])
+                
+                if self._map.check_free_space(sample):            
+                    return sample
+
+            # fallback if all attempts fail
+            return (randint(0,max_x), randint(0,max_y))                   
+            
+        #goal found sampling inside I-RRT* ellipse until best cost found
+        else:
+            start = self._map.start           
+            goal = self._best_goal_node
+
+            cost_min = self.get_distance(start,goal)
+            cost_best = self._best_cost
+            
+            if cost_best is None or cost_best <= cost_min:
+                return goal
+        
+            tmax_x, max_y = self._map.dimensions
+
+            for _ in range(10):  # try up to 10 times
+                theta = uniform(0,2*pi)
+                
+                rate = max((1-self._miss_ratio)*self._sample_spread,1e-6)
+                gamma = expovariate(rate)
+                
+                a = self.get_distance(start,goal)/2
+                b = a * sqrt(1-self._eccentricity**2)
+                
+                x_sampled = log2(2+gamma)*a*cos(theta)
+                y_sampled = gamma * b*sin(theta)
+                
+                angle = atan2(goal[1] - start[1],goal[0]-start[0])
+                
+                rotated_x = x_sampled*cos(angle) - y_sampled*sin(angle)
+                rotated_y = x_sampled*sin(angle) + y_sampled*cos(angle)
+                
+                midpoint = ((start[0]+goal[0])/2,(start[1]+goal[1])/2)
+                
+                sample = (rotated_x + midpoint[0], rotated_y + midpoint[1])
+                
+                if self._map.check_free_space(sample):            
+                    return sample
+
+            # fallback if all attempts fail
+            return (randint(0,max_x), randint(0,max_y))
+            
+
+    def update_miss_ratio(self,obstructed:bool)->None:
+        """update miss ratio per paper equation 4
 
         Args:
-            active_node (tuple[float,float]): node being processed
-            local_nodes (tuple[float,float]]): list of local nodes to check rewiring from
+            obstructed (bool): _description_
         """
+        #if the sample point is obstructed, ratio decreases
+        if obstructed:
+            self._miss_ratio = self._miss_ratio_delta + (1-self._miss_ratio_delta)*self._miss_ratio
         
-        #iterate through each local node    
-        for node in local_nodes:
-            if node == active_node:
-                continue
+        #if sample point is clear, ratio increases
+        else:
+            self._miss_ratio = (1-self._miss_ratio_delta)*self._miss_ratio
             
-            #can a straight line be drawn to the active node unobstructed
-            if not self._map.check_edge_free(active_node,node):
-                continue
-            
-            #calculate cost through the active node
-            new_cost = self._cost[active_node] + self.get_distance(active_node,node)
-            
-            #if cost is less, make active node the parent and update cost
-            if new_cost < self._cost[node]:
-                self._parent[node] = active_node
-                self._cost[node] = new_cost
+    def compute_rotation(self):
+        """Builds the rotation of the ellipse x-axis along path_to_goal direction"""
+        
+    def transform_sample(self,local_point:tuple[float,float]):
+        """Transforms the sample in to the ellipse rotation"""
         
     
     
