@@ -24,6 +24,8 @@ def main():
     
     path_to_goal = rrt.solve()
     
+    turtlebot.follow_waypoints(path_to_goal)
+    
     for i in range(len(path_to_goal) - 1):
         if not game_board.check_edge_free(path_to_goal[i], path_to_goal[i + 1]):
             print("Bad edge:", path_to_goal[i], path_to_goal[i + 1])
