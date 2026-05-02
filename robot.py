@@ -117,7 +117,7 @@ class Robot:
 
         self._rclpy = rclpy
         self._twist_cls = Twist
-        self._node = rclpy.create_node("turtlebot3_waypoint_follower")
+        self._node = rclpy.create_node("waypoint_follower")
 
         self._cmd_pub = self._node.create_publisher(Twist, "/cmd_vel", 10)
         self._odom_sub = self._node.create_subscription(Odometry, "/odom", self.current_pose, 10)
@@ -150,7 +150,7 @@ class Robot:
         self._node.get_logger().info(f"Loaded {len(odom_targets)} waypoints.") #prints that targets are ready
 
         while self._rclpy.ok() and self._pose is None:
-            self._node.get_logger().info("Waiting for /odom...")
+            self._node.get_logger().info("waiting for /odom from turtlebot")
             self._rclpy.spin_once(self._node, timeout_sec=0.5)
 
         dt = 1.0 / rate_hz
