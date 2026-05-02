@@ -684,7 +684,7 @@ class RRTStarAPEI(AlgorithmBase):
                 
                 sample = (rotated_x + midpoint[0], rotated_y + midpoint[1])
                 
-                if self._map.check_free_space(sample):            
+                if self._map.check_free_space(sample) and sample[0]>=0:            
                     return sample
 
             # fallback if all attempts fail
@@ -724,7 +724,7 @@ class RRTStarAPEI(AlgorithmBase):
                 
                 sample = (rotated_x + midpoint[0], rotated_y + midpoint[1])
                 
-                if self._map.check_free_space(sample):            
+                if self._map.check_free_space(sample) and sample[0]>=0:            
                     return sample
 
             # fallback if all attempts fail
