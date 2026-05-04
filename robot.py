@@ -5,6 +5,7 @@
 
 
 import math
+import time
 
 from trajectory import Trajectory
 
@@ -103,7 +104,7 @@ class Robot:
     def _init_ros(self):
         try:
             import rclpy
-            from geometry_msgs.msg import Twist
+            from geometry_msgs.msg import TwistStamped
             from nav_msgs.msg import Odometry
         except ImportError as exc:
             raise ImportError(
@@ -116,11 +117,11 @@ class Robot:
             rclpy.init()
 
         self._rclpy = rclpy
-        self._twist_cls = Twist
+        self._twist_cls = TwistStamped
         self._node = rclpy.create_node("waypoint_follower")
 
-        self._cmd_pub = self._node.create_publisher(Twist, "/cmd_vel", 10)
-        self._odom_sub = self._node.create_subscription(Odometry, "/odom", self.current_pose, 10)
+        self._cmd_pub = self._node.create_publisher(TwistStamped, "/cmd_vel", 10)
+        self._odom_sub = self._node.create_subscription(Odometry, "/odometry/filtered", self.current_pose, 10)
 
     def current_pose(self, msg) : #stores current pose
         p = msg.pose.pose.position
@@ -128,10 +129,14 @@ class Robot:
         theta = self.yaw_from_wxyz(q)
         self._pose = (p.x, p.y, theta)
 
-    def _publish_cmd(self, linear_x, angular_z): #publiahes movement command to turtlebot
+    def _publish_cmd(self, linear_x, angular_z):
         msg = self._twist_cls()
-        msg.linear.x = linear_x
-        msg.angular.z = angular_z
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.header.frame_id = "base_link"
+
+        msg.twist.linear.x = linear_x
+        msg.twist.angular.z = angular_z
+
         self._cmd_pub.publish(msg)
 
     def stop(self): #stops robot
@@ -150,7 +155,7 @@ class Robot:
         self._node.get_logger().info(f"Loaded {len(odom_targets)} waypoints.") #prints that targets are ready
 
         while self._rclpy.ok() and self._pose is None:
-            self._node.get_logger().info("waiting for /odom from turtlebot")
+            self._node.get_logger().info("waiting for /odometry/filtered from turtlebot")
             self._rclpy.spin_once(self._node, timeout_sec=0.5)
 
         dt = 1.0 / rate_hz
@@ -163,7 +168,7 @@ class Robot:
                 )
 
                 while self._rclpy.ok():
-                    self._rclpy.spin_once(self._node, timeout_sec=0.0)
+                    self._rclpy.spin_once(self._node, timeout_sec=0.05)
 
                     x, y, theta = self._pose
                     dx = target_x - x
@@ -186,9 +191,8 @@ class Robot:
                         linear_x = self.bound_limit(linear_gain * distance,0.0,linear_speed_max)
 
                     self._publish_cmd(linear_x, angular_z)
-                    self._node.get_clock().sleep_for(
-                        self._rclpy.duration.Duration(seconds=dt)
-                    )
+                    time.sleep(dt)
+                    
 
             self.stop()
             self._node.get_logger().info("Finished waypoint path.")

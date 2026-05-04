@@ -23,18 +23,23 @@ def main():
     rrt.analysis = True
     
     path_to_goal = rrt.solve()
+        
+    comp_time=time.perf_counter()
+        
+    print(f"Computation complete. Elapsed Time:{comp_time-start_time:2f}")
+    print(f"Plotting")
+    game_board.plot_map(nodes=rrt.nodes,parents=rrt.parents,path_1=rrt._raw_path,path_2=path_to_goal) 
     
-    turtlebot.follow_waypoints(path_to_goal)
+    plot_time=time.perf_counter()
     
-    for i in range(len(path_to_goal) - 1):
-        if not game_board.check_edge_free(path_to_goal[i], path_to_goal[i + 1]):
-            print("Bad edge:", path_to_goal[i], path_to_goal[i + 1])
-    
+    turtlebot.follow_waypoints(path_to_goal)    
+
     end_time = time.perf_counter()
     
-    print(f"Computation complete. Elapsed Time:{end_time-start_time:2f}")
+    #prints time excluding the time to plot
+    print(f"Simulation Complete. Elapsed Time:{end_time-start_time-(plot_time-comp_time):2f}")
     
-    game_board.plot_map(nodes=rrt.nodes,parents=rrt.parents,path_1=rrt._raw_path,path_2=path_to_goal)     
+    
     
 
 if __name__ == "__main__":
