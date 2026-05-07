@@ -7,7 +7,7 @@ from map import Map
 from robot import Robot
 from trajectory import Trajectory
 from random import randint,uniform,expovariate
-from math import sqrt,floor,ceil,log2,atan2,cos,sin, pi
+from math import sqrt,floor,ceil,log2,atan2,cos,sin, pi, radians
 from collections import deque
 from abc import ABC, abstractmethod
 
@@ -25,7 +25,7 @@ class AlgorithmBase(ABC):
         self._raw_path_dist = 0
         self._smooth_path_dist = 0
         self._give_analysis = False
-        self._cost = {self._map.start:0}
+        self._cost = {self.get_start_waypoint():0}
         self._test_radius = self._resolution*5
         self._node_buckets = {}
         self._bucket_size = self._test_radius
@@ -63,7 +63,7 @@ class AlgorithmBase(ABC):
         self._smooth_path_dist = 0
         self._node_buckets.clear()
         self._cost.clear()
-        self._cost = {self._map.start:0}
+        self._cost = {self.get_start_waypoint():0}
         
     def get_distance(self,first:tuple[float,float],second:tuple[float,float])->float:
         """gets the distance between two coordinates
@@ -167,9 +167,26 @@ class AlgorithmBase(ABC):
         #add the last two nodes to the list so they are not dropped
         smooth_path.append(anchor_node)
         smooth_path.append(check_node)
-        smooth_path.append(next_node)       
+        smooth_path.append(next_node)
+        
+        x_start,y_start,ori = self._map.start   
+        smooth_path.appendleft((x_start,y_start))
         
         return smooth_path
+    
+    def get_start_waypoint(self) -> tuple[float,float]:
+        """Starts the robot 300 mm directly infront of start point to help with trajectory smoothing
+        
+        returns: tuple offset infront of the original node"""
+        
+        x,y,ori = self._map.start
+        offset = 300
+        
+        x1 = x+offset*cos(radians(ori))
+        y1 = y+offset*sin(radians(ori))
+        
+        return (x1,y1)        
+        
     
     def give_analytics(self,iterations:int):
         """Provides analytics for path smoothing and total sample iterations
@@ -335,9 +352,11 @@ class RRT(AlgorithmBase):
         goal_found = False
         iterator = 0
         
+        start = self.get_start_waypoint()
+        
         #add start node to node lsit nd visited set
-        self._nodes.append(self._map.start)
-        self._visited.add(self.bucketize(self._map.start))
+        self._nodes.append(start)
+        self._visited.add(self.bucketize(start))
         
         #iterate until a path to the final point has been found or 10000 iterations
         while iterator <= 10000 and not goal_found:
@@ -393,7 +412,7 @@ class RRT(AlgorithmBase):
                     self._raw_path.appendleft(final_node)
                     break     
         
-        while final_node != self._map.start and goal_found:
+        while final_node != self.get_start_waypoint() and goal_found:
             
             self._raw_path.appendleft(self._parent[final_node])       
             final_node = self._parent[final_node]
@@ -429,9 +448,10 @@ class RRTStar(AlgorithmBase):
         iterator = 0
         
         #add start node to node lsit nd visited set
-        self._nodes.append(self._map.start)
-        self._visited.add(self.bucketize(self._map.start))
-        self.add_node_to_bucket(self._map.start)
+        start = self.get_start_waypoint()
+        self._nodes.append(start)
+        self._visited.add(self.bucketize(start))
+        self.add_node_to_bucket(start)
         
         #iterate until a path to the final point has been found or 10000 iterations
         while iterator <= 10000 and not goal_found:
@@ -501,7 +521,7 @@ class RRTStar(AlgorithmBase):
                     self._raw_path.appendleft(final_node)
                     break     
         
-        while final_node != self._map.start and goal_found:
+        while final_node != self.get_start_waypoint() and goal_found:
             
             self._raw_path.appendleft(self._parent[final_node])       
             final_node = self._parent[final_node]
@@ -547,12 +567,13 @@ class RRTStarAPEI(AlgorithmBase):
         iterator = 0
         
         #add start node to node lsit nd visited set
-        self._nodes.append(self._map.start)
-        self._visited.add(self.bucketize(self._map.start))
-        self.add_node_to_bucket(self._map.start)
+        start = self.get_start_waypoint()
+        self._nodes.append(start)
+        self._visited.add(self.bucketize(start))
+        self.add_node_to_bucket(start)
         
         #iterate until a path to the final point has been found or 10000 iterations
-        while iterator <= 10000 and not goal_found:
+        while iterator <= 30000 and not goal_found:
             iterator += 1
         
             sampling_node = self.sample_rrt_apei(goal_found)
@@ -628,7 +649,7 @@ class RRTStarAPEI(AlgorithmBase):
                     self._raw_path.appendleft(self._best_goal_node)  
                     final_node = self._best_goal_node
         
-        while final_node != self._map.start and goal_found:
+        while final_node != self.get_start_waypoint() and goal_found:
             
             self._raw_path.appendleft(self._parent[final_node])       
             final_node = self._parent[final_node]
@@ -644,6 +665,8 @@ class RRTStarAPEI(AlgorithmBase):
         #Analytics for debugging and anaylsis purposes
         if self._give_analysis:
             self.give_analytics(iterator)
+            
+        print(self._path_to_goal)
         
         return self._path_to_goal
     
@@ -659,7 +682,7 @@ class RRTStarAPEI(AlgorithmBase):
         #goal not found sampling in normal APEI
         #taken from Alogirthm 1 of paper
         if not goal_found:
-            start = self._map.start
+            start = self.get_start_waypoint()
             max_x,max_y = self._map.dimensions
             goal = (max_x,max_y/2)
             
@@ -692,7 +715,7 @@ class RRTStarAPEI(AlgorithmBase):
             
         #goal found sampling inside I-RRT* ellipse until best cost found
         else:
-            start = self._map.start           
+            start = self.get_start_waypoint()         
             goal = self._best_goal_node
 
             cost_min = self.get_distance(start,goal)
